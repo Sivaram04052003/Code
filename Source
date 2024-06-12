@@ -1,0 +1,173 @@
+product_family_df = spark.read.format('delta').load('s3://dataos-print-analytics-prod/delta_db/feature_usage/product_family_table')
+product_family_df.createOrReplaceTempView('product_family_df_sql')
+
+mfp_os_df = spark.read.format('delta').load('s3://dataos-print-analytics-prod/delta_db/feature_usage/mfp_os_table')
+mfp_os_df.createOrReplaceTempView('mfp_os_df_sql')
+
+product_line_code_df = spark.read.format('delta').load('s3://dataos-print-analytics-prod/delta_db/feature_usage/product_line_code_table')
+product_line_code_df.createOrReplaceTempView('product_line_code_df_sql')
+
+
+Joining Three tables
+
+mdf_ref = spark.sql('''
+    select 
+        mf.Product,
+        pro.ProductName as Ref_ProductName,
+        pro.Family,
+        pro.ModelNumber as Ref_ModelNumber,
+        mf.ProductType,
+        mf.OS,
+        mf.ProductCateogry,
+        code.Product_Category as OPS_Product_Category,
+        mf.FWCode,
+        code.Global_Business_Unit,
+        code.Product_Line_Code,
+        code.Platform_Name,
+        code.Product_Identifier
+    from 
+        product_family_df_sql as pro
+    left join 
+        mfp_os_df_sql as mf
+    on 
+        pro.Product = mf.Product 
+    left join 
+        product_line_code_df_sql as code
+    on 
+        code.Product_Identifier = pro.ModelNumber
+''')
+
+mdf_ref.display()
+
+
+mdf_combine=mdf_exploading.join(mdf_ref,mdf_ref["Ref_ModelNumber"]==mdf_exploading["ModelNumber"],how="left")
+
+
+workflow_filter=mdf_combine.filter("usageDetailType='com.hp.cdm.domain.usage.type.workflow.version.1.-1.0.0-alpha3.schema.json'")
+
+from pyspark.sql.functions import from_json
+
+workflow_detail_schema = StructType([
+    StructField('featureName', StringType(), True),
+    StructField('featureType', StringType(), True),
+    StructField('contentOrientation', StringType(), True),
+    StructField('skewPercentageCorrection', IntegerType(), True),
+    StructField('licenseUsed', StringType(), True),
+    StructField('featureEnabled', StringType(), True)
+])
+
+
+parsed_df = workflow_filter.withColumn('usageDetailStruct', from_json('usageDetail', workflow_detail_schema))
+
+workflow_df = parsed_df.select(
+    'usageDetailStruct.featureName',
+    'usageDetailStruct.featureType',
+    'usageDetailStruct.contentOrientation',
+    'usageDetailStruct.skewPercentageCorrection',
+    'usageDetailStruct.licenseUsed',
+    'usageDetailStruct.featureEnabled'
+)
+
+workflow_result = parsed_df.select('Platform',
+  'FilePath',
+  'SubscriptionId',
+  'SequenceNumber',
+  'JobId',
+  'DateTime',
+  'Destinations',
+  'ProductName',
+  'Ref_ProductName',
+  'ModelNumber',
+  'Ref_ModelNumber',
+  'SerialNumber',
+  'Product',
+  'Family',
+  'ProductType',
+  'OS',
+  'ProductCateogry',
+  'FWCode',
+  'Global_Business_Unit',
+  'OPS_Product_Category',
+  'Product_Line_Code',
+  'Platform_Name',
+  'Product_Identifier',
+  'Printer_ID',
+  'usageDetailStruct.*')
+
+
+from pyspark.sql.functions import when
+from pyspark.sql.functions import lit
+
+workflow_result = workflow_result.withColumn('customer_feature_name', 
+                                when(workflow_result['featureName'] == 'isMultiDestSubJob', lit('Scan+Destination'))
+                                .when(workflow_result['featureName'] == 'adfMultiFeedDetection', lit('Multi-feed Detection'))
+                                .when(workflow_result['featureName'] == 'ocr', lit('OCR Language'))
+                                .when(workflow_result['featureName'] == 'autoCrop', lit('Cropping Options'))
+                                .when(workflow_result['featureName'] == 'colorMode', lit('Color/Black'))
+                                .when(workflow_result['featureName'] == 'contentOrientation', lit('Orientation Change'))
+                                .when(workflow_result['featureName'] == 'fileType', lit('File Type'))
+                                .when(workflow_result['featureName'] == 'optimizeTextImage', lit('Optimize Text/Picture'))
+                                .when(workflow_result['featureName'] == 'resolutionMode', lit('Resolution'))
+                                .when(workflow_result['featureName'] == 'bookCopy', lit('Scan Mode - Book'))
+                                .when(workflow_result['featureName'] == 'iDCardScan', lit('ScanMode - 2-Sided ID'))
+                                .when(workflow_result['featureName'] == 'imageAdjustment', lit('Image Adjustment'))
+                                .when(workflow_result['featureName'] == 'notification', lit('Notification'))
+                                .when(workflow_result['featureName'] == 'autoTone', lit('Automatic Tone'))
+                                .when(workflow_result['featureName'] == 'encryption', lit('Encryption'))
+                                .when(workflow_result['featureName'] == 'blankPageSuppression', lit('Blank Page Suppression'))
+                                .when(workflow_result['featureName'] == 'autoSkew', lit('Automatically Straighten'))
+                                .when(workflow_result['featureName'] == 'edgeErase', lit('Erase Edges'))
+                                .otherwise(workflow_result['featureName']))
+
+workflow_result.display()
+
+
+
+
+import boto3
+ 
+def getAWSSecret(secretId,secretType):
+  endpoint_url = "https://secretsmanager.us-west-2.amazonaws.com"
+  region_name = "us-west-2"
+ 
+  client = boto3.client(
+  service_name='secretsmanager',
+  region_name=region_name,
+  endpoint_url=endpoint_url)
+ 
+  # response = client.list_secrets()
+  # name_list = response['SecretList']
+  get_secret_value_response = client.get_secret_value(SecretId=secretId)
+  secret_value = eval(get_secret_value_response['SecretString'])[secretType]
+  return secret_value
+ 
+ 
+def writeRedshift(df,destinationTableName,aws_iam_role_ucde,dest_jdbc_url,tempS3Dir_ucde):
+  df.write \
+  .format("com.databricks.spark.redshift") \
+  .option("aws_iam_role", aws_iam_role_ucde)\
+  .option("url",dest_jdbc_url) \
+  .option("dbtable", destinationTableName) \
+  .option("tempdir", tempS3Dir_ucde) \
+  .mode("overwrite")\
+  .save()
+ 
+ 
+aws_iam_role_ucde = 'arn:aws:iam::828361281741:role/redshift-copy-unload-team-pa'
+port_ucde = '5439'
+dest_rs_url= "dataos-core-redshift-team-pa.hpdataos.com"
+dest_rs_url_port = dest_rs_url + ":" + port_ucde
+dest_rs_dbname = 'prod'
+dest_rs_user = 'auto_etl'
+dest_rs_pw = getAWSSecret('prod/redshift/pa/auto_etl','password')
+dest_jdbc_url = f"jdbc:redshift://{dest_rs_url_port}/{dest_rs_dbname}?user={dest_rs_user}&password={dest_rs_pw}&ssl=true&sslfactory=com.amazon.redshift.ssl.NonValidatingFactory"
+
+
+
+
+## Write the table to Redshift location
+destinationTableName = 'dashboards.intern_feature_usage_workflow'
+ 
+tempS3Dir_ucde = 's3://dataos-print-analytics-prod/temp_transfer/intern_feature_usage_workflow'
+ 
+writeRedshift(workflow_result,destinationTableName,aws_iam_role_ucde,dest_jdbc_url,tempS3Dir_ucde)
