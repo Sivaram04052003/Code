@@ -1,0 +1,178 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import explode, col
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, ArrayType
+
+originator_detail=StructType([
+                StructField('ProductName', StringType(), True),
+                StructField('Nickname', StringType(), True),
+                StructField('ModelNumber', StringType(), True),
+                StructField('SerialNumber', StringType(), True),
+                StructField('FirmwareRevision', StringType(), True)
+            ])
+            
+scanned_sheet_set=StructType([
+                        StructField('count', IntegerType(), True),
+                        StructField('size', StringType(), True),
+                        StructField('type', StringType(), True),
+                        StructField('sourceTray', StringType(), True),
+                        StructField('destinationBin', StringType(), True),
+                        StructField('viewMediaOutputID', StringType(), True),
+                        StructField('plex', StringType(), True),
+                        StructField('frontImpressionClassification', StringType(), True),
+                        StructField('backImpressionClassification', StringType(), True)
+                    ])
+                    
+feature_usage = StructType([
+    StructField("usageDetailType", StringType(), True),
+    StructField("usageDetail",StringType(), True)
+])
+
+
+agent_used = StructType([
+    StructField("color", StringType(), True),
+    StructField("amountUsed", StringType(), True)
+])
+
+environmental_data = StructType([
+    StructField("temperature", IntegerType(), True),
+    StructField("humidity", IntegerType(), True),
+    StructField("absoluteWater", IntegerType(), True),
+    StructField("measurementDate", StringType(), True)
+])
+
+dust_detection = StructType([
+    StructField("continuousUniqueStreak", IntegerType(), True),
+    StructField("continuousUniqueStreakLocation", IntegerType(), True),
+    StructField("darkestStreak", IntegerType(), True),
+    StructField("darkestStreakLocation", IntegerType(), True),
+    StructField("totalStreaks", IntegerType(), True),
+    StructField("totalStreakLocations", IntegerType(), True),
+    StructField("dirtinessLevel", IntegerType(), True)
+])
+
+
+# Define the schema
+struct = StructType([
+    StructField('platform', StringType(), True),
+    StructField('filePath', StringType(), True),
+    StructField('data', StructType([
+        StructField('originator', StructType([
+            StructField('originatorDetailType', StringType(), True),
+            StructField('originatorDetail',originator_detail,True)
+        ]), True),
+        StructField('Data', StructType([
+            StructField('events', ArrayType(StructType([
+                StructField('eventCategory', StringType(), True),
+                StructField('sequenceNumber', StringType(), True),
+                StructField('dateTime', StringType(), True),
+                StructField('eventDetailType', StringType(), True),
+                StructField('eventDetail', StructType([
+                    StructField('version', StringType(), True),
+                    StructField('jobId', StringType(), True),
+                    StructField('applicationName', StringType(), True),
+                    StructField('dataSource', StringType(), True),
+                    StructField('destinations', ArrayType(StringType()), True),
+                    StructField('jobCategory', StringType(), True),
+                    StructField('startTime', StringType(), True),
+                    StructField('endTime', StringType(), True),
+                    StructField('jobPaused', StringType(), True),
+                    StructField('totalSheets', StringType(), True),
+                    StructField('scannedSheetSets',ArrayType(scanned_sheet_set),True),
+                    StructField('otherScannedSheets', IntegerType(), True),
+                    StructField('econoMode', StringType(), True),
+                    StructField('totalImpressions', StringType(), True),
+                    StructField('totalPages', StringType(), True),
+                    StructField('agentUsed',ArrayType(agent_used), True),
+                    StructField('printedSheetSets', ArrayType(scanned_sheet_set), True),
+                    StructField('otherPrintedSheets', IntegerType(), True),
+                    StructField('engineSpinDowns', IntegerType(), True),
+                    StructField('environmentalData',environmental_data, True),
+                    StructField('dustDetectionResultsFrontSide',dust_detection, True),
+                    StructField('dustDetectionResultsBackSide',dust_detection, True),
+                    StructField('featureUsage', ArrayType(feature_usage), True)
+                ]), True)
+            ])), True),
+            StructField('links', ArrayType(StructType([
+                StructField('href', StringType(), True),
+                StructField('rel', StringType(), True)
+            ])), True),
+            StructField('subscriptionId', StringType(), True),
+            StructField('token', StringType(), True),
+            StructField('version', StringType(), True)
+        ]), True)
+    ]))
+])
+
+# Load data
+regression_file_path = "s3://dataos-print-analytics-prod/feature_usage/data_dump_regression_jan/"
+mdf = spark.read.json(regression_file_path,schema=struct)
+
+# Explode array columns and further flatten the structure
+mdf_exploading = mdf.selectExpr(
+    'platform as Platform',
+    'filePath as FilePath',
+    'data.originator.originatorDetailType as originatorDetailType',
+    'data.originator.originatorDetail.ProductName as ProductName',
+    'data.originator.originatorDetail.Nickname as Nickname',
+    'data.originator.originatorDetail.ModelNumber as ModelNumber',
+    'data.originator.originatorDetail.SerialNumber as SerialNumber',
+    'data.originator.originatorDetail.FirmwareRevision as FirmwareRevision',
+    'data.Data.subscriptionId as SubscriptionId',
+    'data.Data.token as Token',
+    'data.Data.version as parentversion',
+    'data.Data.links.href as href',
+    'data.Data.links.rel as rel',
+    'explode(data.Data.events) as Events'
+).select(
+    'Platform',
+    'FilePath',
+    'originatorDetailType',
+    'ProductName',
+    'Nickname',
+    'ModelNumber',
+    'SerialNumber',
+    'FirmwareRevision',
+    'SubscriptionId',
+    'Token',
+    'parentversion',  
+    'href',
+    'rel',
+    col("Events.eventCategory").alias("EventCategory"),
+    col("Events.sequenceNumber").alias("SequenceNumber"),
+    col("Events.dateTime").alias("DateTime"),
+    col("Events.eventDetailType").alias("EventDetailType"),
+    col("Events.eventDetail.version").alias("version"),
+    col("Events.eventDetail.jobId").alias("JobId"),
+    col("Events.eventDetail.applicationName").alias("ApplicationName"),
+    col("Events.eventDetail.dataSource").alias("DataSource"),
+    col("Events.eventDetail.destinations").alias("Destinations"),
+    col("Events.eventDetail.jobCategory").alias("JobCategory"),
+    col("Events.eventDetail.startTime").alias("StartTime"),
+    col("Events.eventDetail.endTime").alias("EndTime"),
+    col("Events.eventDetail.jobPaused").alias("JobPaused"),
+    col("Events.eventDetail.totalSheets").alias("TotalSheets"),
+    col("Events.eventDetail.scannedSheetSets").alias ("ScannedSheetSets"),
+    col("Events.eventDetail.otherScannedSheets").alias("OtherScannedSheets"),
+    col("Events.eventDetail.econoMode").alias("EconoMode"),
+    col("Events.eventDetail.totalImpressions").alias("TotalImpressions"),
+    col("Events.eventDetail.totalPages").alias("TotalPages"),
+    col("Events.eventDetail.agentUsed").alias("AgentUsed"),
+    col("Events.eventDetail.printedSheetSets").alias("PrintedSheetSets"),
+    col("Events.eventDetail.otherPrintedSheets").alias("OtherPrintedSheets"),
+    col("Events.eventDetail.engineSpinDowns").alias("EngineSpinDowns"),
+    col("Events.eventDetail.environmentalData").alias("environmentalData"),
+    col("Events.eventDetail.dustDetectionResultsFrontSide").alias("DustDetectionResultsFrontSide"),
+    col("Events.eventDetail.dustDetectionResultsBackSide").alias("DustDetectionResultsBackSide"),
+    col("Events.eventDetail.featureUsage").alias("EventDetailFeatureUsage")
+)
+mdf_exploading = mdf_exploading.withColumn("Destinations", explode("Destinations")) \
+    .withColumn("href", explode("href")) \
+    .withColumn("rel", explode("rel")) \
+    .withColumn("EventDetailFeatureUsage", explode("EventDetailFeatureUsage")) \
+    .withColumn("usageDetailType",col("EventDetailFeatureUsage.usageDetailType")) \
+    .withColumn("usageDetail",(col("EventDetailFeatureUsage.usageDetail"))) \
+    .drop("EventDetailFeatureUsage")
+from pyspark.sql.functions import concat_ws
+
+mdf_exploading= mdf_exploading.withColumn("Printer_ID", concat_ws("-", "ModelNumber", "SerialNumber"))
+mdf_exploading.display()
